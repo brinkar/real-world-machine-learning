@@ -10,5 +10,5 @@ The notebooks can be viewed directly in the Github repository:
 
 https://github.com/brinkar/real-world-machine-learning
 
-To run the code yourself, please clone this repo, install IPython and run
+To run the code yourself, please clone this repo, install IPython (on Python 2.7) and run
 `ipython notebook` in the repo directory.
