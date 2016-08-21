@@ -63,3 +63,6 @@ target/
 
 # Editor
 *.swp
+
+# Figures
+figures/
