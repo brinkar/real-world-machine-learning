@@ -68,5 +68,7 @@ target/
 figures/
 .Rproj.user
 
-# knitr html output
+# knitr output
 R/*.html
+R/*_cache
+R/*_files

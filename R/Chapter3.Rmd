@@ -1,0 +1,247 @@
+---
+title: "Real-World Machine Learning" 
+subtitle: "Chapter 3"
+author: "Paul Adamson"
+date: "December 7, 2016"
+output: html_document
+---
+
+This file contains R code to accompany Chapter 3 of the book 
+["Real-World Machine Learning"](https://www.manning.com/books/real-world-machine-learning),
+by Henrik Brink, Joseph W. Richards, and Mark Fetherolf.  The code was contributed by
+[Paul Adamson](http://github.com/padamson). 
+
+*NOTE: working directory should be set to this file's location.*
+
+```{r setup, include=FALSE}
+library(knitr)
+knitr::opts_chunk$set(echo = TRUE)
+library(plyr)
+library(dplyr)
+library(vcd)
+library(AppliedPredictiveModeling)
+library(caret)
+library(ellipse)
+library(kknn)
+library(gridExtra)
+library(grid)
+library(randomForest)
+set.seed(3456)
+.pardefault <- par()
+```
+
+## Figure 3.4 A subset of the Titanic Passengers dataset
+
+We are going to be interested in predicting survival, so it is useful to specify 
+the `Survived` variable to be of type `factor`. For visualizing the data, 
+it is also useful to use the `revalue` function to specify the `no` and `yes`
+levels for the `factor` variable. The `kable` function is built into the `knitr`
+package.
+
+```{r figure3.4, cache=TRUE}
+titanic <- read.csv("../data/titanic.csv", 
+                    colClasses = c(
+                      Survived = "factor",
+                      Name = "character",
+                      Ticket = "character",
+                      Cabin = "character"))
+titanic$Survived <- revalue(titanic$Survived, c("0"="no", "1"="yes"))
+kable(head(titanic, 6), digits=2)
+```
+
+## Figure 3.5 Mosaic plot for Titanic data: Gender vs. survival
+
+The ["Visualizing Categorical Data" package  (`vcd`)](https://cran.r-project.org/web/packages/vcd/vcd.pdf)
+provides an excellent set of functions for exploring categorical data,
+including mosaic plots.
+
+```{r figure3_5, cache=TRUE, dependson="figure3.4"}
+mosaic(
+  ~ Sex + Survived,
+  data = titanic, 
+  main = "Mosaic plot for Titanic data: Gender vs. survival",
+  shade = TRUE,
+  split_vertical = TRUE,
+  labeling_args = list(
+    set_varnames = c(
+      Survived = "Survived?",
+      Sex = "Gender")))
+```
+
+## Figure 3.6 Processed data
+
+First, we get rid of the variables that we do not want in our model.
+(`Cabin` might actually be useful, but it's not used here.)
+Then we use `is.na` to set missing age values to -1.
+The `mutate` and `select` functions make it easy to take square root of 
+the `Fare` variable and then drop it from the dataset.
+We then drop rows with missing `Embarked` data and remove the unused level 
+`""`. 
+Finally, we convert `factor` variables to dummy variables using the 
+`dummyVars` function in the `caret` package.
+To avoid perfect collinearity (a.k.a. the dummy variable trap), we set
+the `fullRank` parameter to `TRUE`.  `Survived.yes` is then converted back
+to a `factor` variable.
+
+```{r figure3.6, cache=TRUE, dependson="figure3.4"}
+titanicTidy <- subset(titanic, select = -c(PassengerId, Name, Ticket, Cabin))
+
+titanicTidy$Age[is.na(titanicTidy$Age)] <- -1
+
+titanicTidy <- titanicTidy %>%
+  mutate(sqrtFare = sqrt(Fare)) %>%
+  select(-Fare)
+
+titanicTidy <- titanicTidy %>%
+  filter(!(Embarked=="")) %>%
+  droplevels
+
+dummies <- dummyVars(" ~ .", data = titanicTidy, fullRank = TRUE)
+titanicTidyNumeric <- data.frame(predict(dummies, newdata = titanicTidy))
+
+titanicTidyNumeric$Survived.yes <- factor(titanicTidyNumeric$Survived.yes)
+kable(head(titanicTidyNumeric))
+```
+
+## Figure 3.10 Four randomly chosen handwritten digits from the MNIST database
+
+Thanks to [Longhow Lam](https://longhowlam.wordpress.com/2015/11/25/a-little-h2o-deeplearning-experiment-on-the-mnist-data-set/)
+for posting the code used in the `displayMnistSamples` function that display's 
+digits from the MNIST dataset.
+
+```{r figure3.10, cache=TRUE,fig.height=2}
+mnist <- read.csv("../data/mnist_small.csv",
+                  colClasses = c(label = "factor"))
+displayMnistSamples <- function(x) {
+  for(i in x){
+  y = as.matrix(mnist[i, 2:785])
+  dim(y) = c(28, 28)
+  image( y[,nrow(y):1], axes = FALSE, col = gray(0:255 / 255))
+  text( 0.2, 0, mnist[i,1], cex = 3, col = 2, pos = c(3,4))
+  }
+}
+par( mfrow = c(1,4), mai = c(0,0,0,0.1))
+displayMnistSamples(sample(1:length(mnist),4))
+```
+
+## Figure 3.11 Table of predicted probabilities from a k-nearest neighbors classifier, as applied to the MNIST dataset
+
+```{r figure3.11, cache=TRUE, dependson="figure3.10"}
+trainIndex <- createDataPartition(mnist$label, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+mnistTrain <- mnist[ trainIndex,]
+mnistTest  <- mnist[-trainIndex,]
+
+mnist.kknn <- kknn(label~., mnistTrain, mnistTest, distance = 1,
+                   kernel = "triangular")
+
+confusionMatrix(fitted(mnist.kknn),mnistTest$label)
+
+rowsInTable <- 1:10
+prob <- as.data.frame(mnist.kknn$prob[rowsInTable,])
+mnistResultsDF <- data.frame(mnistTest$label[rowsInTable],
+                             mnist.kknn$fit[rowsInTable],
+                             prob)
+
+
+kable(mnistResultsDF, digits=2,
+      col.names=c("actual","fit",0:9))
+```
+
+## Figure 3.13 Small subset of the Auto MPG data
+
+```{r figure3.13, cache=TRUE}
+auto <- read.csv("../data/auto-mpg.csv",
+                 colClasses = c(
+                      origin = "factor"))
+
+auto$origin <- revalue(auto$origin, 
+                       c("1\t"="USA", "2\t"="Europe", "3\t"="Asia"))
+
+kable(head(auto,5))
+```
+
+## Figure 3.14 Scatter plots of Vehicle Weight and Model Year versus MPG
+
+```{r figure3.14, cache=TRUE, dependson="figure3.13", warning=FALSE}
+par(.pardefault)
+p1<-ggplot(auto, aes(weight, mpg)) + 
+  geom_point() +
+  labs(y = "Miles per gallon",
+       x = "Vehicle weight")
+p2<-ggplot(auto, aes(modelyear, mpg)) + 
+  geom_point() +
+  theme(axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank()) +
+  labs(x = "Model year")
+grid.arrange(p1,p2,ncol=2, 
+             top=textGrob("Scatterplots for MPG data",
+                          gp=gpar(fontsize=14,font=8)))
+```
+
+## Figure 3.15 The Auto MPG data after expanding the categorical Origin column
+
+Note that the row numbering differs between python and R by 1
+(python starts row numbering at 0, and R starts at 1).
+
+```{r figure3.15, cache=TRUE, dependson="figure3.13"}
+dummies <- dummyVars(" ~ .", data = auto, fullRank = TRUE)
+autoNumeric <- data.frame(predict(dummies, newdata = auto))
+
+kable(tail(autoNumeric,5))
+```
+
+## Figure 3.16 Comparing MPG predictions on a held-out testing set to actual values
+
+```{r figure3.16, cache=TRUE, dependson="figure3.15"}
+trainIndex <- createDataPartition(autoNumeric$mpg, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+
+autoTrain <- autoNumeric[ trainIndex,]
+autoTest  <- autoNumeric[-trainIndex,]
+
+lmFit <- train(mpg ~ ., data = autoTrain,
+               method = "lm")
+lmPred <- predict(lmFit, newdata = autoTest)
+
+rowsInTable <- 1:5
+kable(data.frame("Origin.Europe" = autoTest$origin.Europe[rowsInTable],
+                 "Origin.Asia" = autoTest$origin.Asia[rowsInTable],
+                 "MPG" = autoTest$mpg[rowsInTable],
+                 "Predicted MPG" = lmPred[rowsInTable]))
+```
+
+## Figure 3.17 A scatter plot of the actual versus predicted values on the held-out test set. The diagonal line shows the perfect regressor. The closer all of the predictions are to this line, the better the model.
+
+```{r figure3.17, cache=TRUE, dependson="figure3.16"}
+ggplot(autoTest, aes(x=mpg, y=lmPred)) + 
+  geom_point() + 
+  geom_abline(slope = 1, intercept = 0) +
+  labs(x="MPG", y="Predicted MPG")
+```
+
+## Figure 3.18 Table of actual versus predicted MPG values for the nonlinear random forest regression model
+
+```{r figure3.18, cache=TRUE, dependson="figure3.16"}
+rfFit <- train(mpg ~ ., data = autoTrain,
+               method = "rf")
+rfPred <- predict(rfFit, newdata = autoTest)
+
+kable(data.frame("Origin.Europe" = autoTest$origin.Europe[rowsInTable],
+                 "Origin.Asia" = autoTest$origin.Asia[rowsInTable],
+                 "MPG" = autoTest$mpg[rowsInTable],
+                 "Predicted MPG" = rfPred[rowsInTable]))
+
+```
+
+## Figure 3.19 Comparison of MPG data versus predicted values for the nonlinear random forest regression model
+
+```{r figure3.19, cache=TRUE, dependson="figure3.18"}
+ggplot(autoTest, aes(x=mpg, y=rfPred)) + 
+  geom_point() + 
+  geom_abline(slope = 1, intercept = 0) +
+  labs(x="MPG", y="Predicted MPG")
+```
