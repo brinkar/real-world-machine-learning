@@ -1,0 +1,232 @@
+---
+title: "Real-World Machine Learning"
+subtitle: "Chapter 2"
+author: "Paul Adamson"
+date: "December 7, 2016"
+output: html_document
+---
+
+This file contains R code to accompany Chapter 2 of the book 
+["Real-World Machine Learning"](https://www.manning.com/books/real-world-machine-learning),
+by Henrik Brink, Joseph W. Richards, and Mark Fetherolf.  The code was contributed by
+[Paul Adamson](http://github.com/padamson). 
+
+*NOTE: working directory should be set to this file's location.*
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(vcd)
+library(sm)
+```
+
+## Listing 2.1 Convert categorical features to numerical binary features
+
+Creating dummy variables in R is extremely easy with the `model.matrix` function.
+In the below code, when the `personData` dataframe is created,
+the `maritalstatus` variable is of type `factor` with levels "single" and
+"married" by default. 
+
+```{r listing2.1}
+personData <- data.frame(person = 1:2, 
+                         name = c("Jane Doe", "John Smith"),
+                         age = c(24, 41),
+                         income = c(81200, 121000),
+                         maritalstatus = c("single","married"))
+personDataNew <- data.frame(personData[,1:4], 
+                            model.matrix(~ maritalstatus - 1, 
+                                         data = personData)) 
+str(personData)
+```
+
+In the call to `model.matrix`, the −1 in the model formula 
+ensures that we create a dummy variable for each of the two marital statuses 
+(technically, it suppresses the creation of an intercept). 
+```{r}
+model.matrix(~ maritalstatus - 1, 
+             data = personData)
+```
+The matrix of dummy variables is then joined to the original dataframe (minus
+the maritalstatus column) with another call to `data.frame`.
+
+## Listing 2.2 Simple feature extraction on Titanic cabins
+
+The packages [`dplyr`](https://cran.rstudio.com/web/packages/dplyr) and 
+[`tidyr`](https://cran.r-project.org/web/packages/tidyr) are excellent 
+for tidying and preprocessing data, 
+including creating new features from existing ones. (Note: `plyr` will
+be used later, but we must load it prior to `dplyr`.)
+
+```{r listing2.2}
+titanic <- read.csv("../data/titanic.csv", 
+                    colClasses = c(
+                      Survived = "factor",
+                      Name = "character",
+                      Ticket = "character",
+                      Cabin = "character"))
+
+titanic$Survived <- revalue(titanic$Survived, c("0"="no", "1"="yes"))
+
+titanicNew <- titanic %>%
+  separate(Cabin, into = "firstCabin", sep = " ", extra = "drop", remove = FALSE) %>%
+  separate(firstCabin, into = c("cabinChar", "cabinNum"), sep = 1) %>%
+  rowwise() %>%
+  mutate(numCabins = length(unlist(strsplit(Cabin, " "))))
+
+str(titanicNew)
+```
+
+In Listing 2.2, `read.csv` is used to read in the comma separated value
+(csv) data file. The `colClasses` argument is used to specify the correct
+class for some features. Then, the `revalue` function changes the levels
+of the `Survived` factor variable so that '0' indicates 'no' and '1'
+indicates 'yes'. The `titanicNew` dataframe is then created by piping
+together `separate` from `tidyr` and `mutate` from `dplyr`. `separate`
+does exactly what its name implies: it separates a single character column
+into multiple columns. `mutate` is used to add a new feature often (as
+in this case) by acting on values of another feature.
+
+## Listing 2.3 Feature normalization
+
+The below code will normalize a feature using the "min-max" method. As
+an example, the `Age` feature of the `titanic` dataframe is normalized
+and a histogram of the new normalized feature is plotted with
+[`ggplot2`](http://docs.ggplot2.org/current/index.html#). 
+
+```{r normalize}
+normalizeFeature <- function(data, fMin=-1.0, fMax=1.0){
+  dMin = min(na.omit(data))
+  dMax = max(na.omit(data))
+  factor = (fMax - fMin) / (dMax - dMin)
+  normalized = fMin + (data - dMin)*factor
+  normalized
+}
+
+titanic$AgeNormalized <- normalizeFeature(titanic$Age)
+ggplot(data=titanic, aes(AgeNormalized)) +
+  geom_histogram()
+```
+
+## Figure 2.12 Mosaic plot for Titanic data: Gender vs. survival
+
+The ["Visualizing Categorical Data" (`vcd`)](https://cran.r-project.org/web/packages/vcd/vcd.pdf) package 
+provides an excellent set of functions for exploring categorical data,
+including mosaic plots.
+
+```{r figure2.12}
+mosaic(
+  ~ Sex + Survived,
+  data = titanic, 
+  main = "Mosaic plot for Titanic data: Gender vs. survival",
+  shade = TRUE,
+  split_vertical = TRUE,
+  labeling_args = list(
+    set_varnames = c(
+      Survived = "Survived?")))
+```
+
+## Figure 2.13 Mosaic plot for Titanic data: Passenger class vs. survival
+
+```{r figure2.13}
+mosaic(
+  ~ Pclass + Survived,
+  data = titanic, 
+  main = "Mosaic plot for Titanic data: Passenger Class vs. survival",
+  shade = TRUE,
+  split_vertical = TRUE,
+  labeling_args = list(
+    set_varnames = c(
+      Pclass = "Passenger class",
+      Survived = "Survived?")))
+```
+
+## Figure 2.14 Box plot for Titanic data: Passenger age vs. survival
+
+The `boxplot` function is provided as part of the standard `graphics` package
+in R. `ggplot2` provides a much nicer version.
+```{r figure2.14a}
+boxplot(Age ~ Survived, 
+        data = titanic,
+        xlab = "Survived?",
+        ylab = "Age\n(years)",
+        las = 1)
+```
+
+```{r figure2.14b}
+ggplot(titanic, aes(Survived, Age)) + 
+  geom_boxplot() +
+  xlab("Survived?") +
+  ylab("Age\n(years)")
+```
+
+## Figure 2.15 Box plots for Titanic data: Passenger fare versus survival
+
+Plots can be combined in rows and columns using the `mfrow` graphical
+parameter set via the `par` function. (Try `help(par)` to learn more.) 
+```{r figure2.15}
+par(mfrow=c(1,2))
+par(mai=c(1,1,.1,.1), las = 1)
+boxplot(Fare ~ Survived, 
+        data = titanic,
+        xlab = "Survived?",
+        ylab = "Fare Amount")
+boxplot(Fare**(1/2) ~ Survived, 
+        data = titanic,
+        xlab = "Survived?",
+        ylab = "sqr\n(fare amount)")
+```
+
+## Figure 2.16 Density plot for MPG data, by region
+
+The `sm.density.compare` function from the `sm` package is useful for
+comparing a set of univariate density estimates.  The first argument is
+a vector of data, and the second argument is a vector of group labels that
+correspond to each value. The `colfill` variable and `legend` function
+are used to place a legend on the plot generated by `sm.density.compare`.
+
+```{r figure2.16}
+par(mfrow=c(1,1))
+auto <- read.csv("../data/auto-mpg.csv",
+                 colClasses = c(origin = "factor"))
+
+auto$origin <- revalue(auto$origin, 
+                       c("1\t"="USA", "2\t"="Europe", "3\t"="Asia"))
+
+sm.density.compare(auto$mpg, auto$origin,
+                   xlab="Miles per gallon",
+                   ylab="Density")
+title(main="Density plot for MPG data, by region")
+
+colfill<-c(2:(2+length(levels(auto$origin)))) 
+legend(x="topleft", 
+       inset=0.05, 
+       text.width=5, 
+       levels(auto$origin), 
+       fill=colfill)
+```
+
+## Figure 2.17 Scatterplots for MPG data
+
+It doesn't get much simpler than the `plot` function in R.
+```{r figure2.17}
+par(mfrow=c(1,2), mai=c(1,1,.1,.1), las = 1)
+plot(auto$weight, auto$mpg,
+     xlab = "Vehicle weight",
+     ylab = "Miles per\ngallon")
+plot(auto$modelyear, auto$mpg,
+     xlab = "Model year",
+     ylab = "Miles per\ngallon")
+
+```
+
+Although not in the book, everyone should become familiar with facets via 
+[`ggplot2`](http://docs.ggplot2.org/current/index.html#).
+
+```{r figure2.17_ggplot2}
+p <- ggplot(auto, aes(mpg, weight)) + 
+  geom_point()
+p + facet_grid(. ~ origin)
+```
