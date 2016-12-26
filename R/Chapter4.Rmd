@@ -1,0 +1,470 @@
+---
+title: "Real-World Machine Learning"
+subtitle: "Chapter 4"
+author: "Paul Adamson"
+date: "December 25, 2016"
+output: html_document
+---
+
+This notebook contains R code to accompany Chapter 4 of the book 
+["Real-World Machine Learning"](https://www.manning.com/books/real-world-machine-learning),
+by  Henrik Brink, Joseph W. Richards, and Mark Fetherolf.  
+The code was contributed by [Paul Adamson](http://github.com/padamson). 
+
+*NOTE: working directory should be set to this file's location.*
+
+*NOTE: depending on your machine, you may need to adjust the parameter in the call to `makeCluster()` in the code to generate Figure 4.19*
+
+```{r setup, include=FALSE}
+set.seed(1234)
+library(knitr)
+knitr::opts_chunk$set(echo = TRUE)
+library(plyr)
+library(dplyr)
+library(AppliedPredictiveModeling)
+library(caret)
+library(gbm)
+
+library(doParallel)
+library(randomForest)
+
+library(RColorBrewer)
+
+.pardefault <- par()
+```
+
+## Figure 4.9 The first five rows of the Titanic Passengers dataset 
+
+As in Chapter 3, we are going to be interested in predicting survival, so again,
+it is useful to specify 
+the `Survived` variable to be of type `factor`. For visualizing the data, 
+it is also useful to use the `revalue` function to specify the `no` and `yes`
+levels for the `factor` variable. The `kable` function is built into the `knitr`
+package.
+
+```{r figure4.9, cache=TRUE}
+titanic <- read.csv("../data/titanic.csv", 
+                    colClasses = c(
+                      Survived = "factor",
+                      Name = "character",
+                      Ticket = "character",
+                      Cabin = "character"))
+titanic$Survived <- revalue(titanic$Survived, c("0"="no", "1"="yes"))
+kable(head(titanic, 5), digits=2)
+```
+
+## Figure 4.10 Splitting the full dataset into training and testing sets
+
+Here, we follow the same process used for Figure 3.6 to process the data and
+prepare it for our model. First, we get rid of the variables that we do not 
+want in our model.
+(`Cabin` might actually be useful, but it's not used here.)
+Then we use `is.na` to set missing age values to -1.
+The `mutate` and `select` functions make it easy to take square root of 
+the `Fare` variable and then drop it from the dataset.
+We then drop rows with missing `Embarked` data and remove the unused level 
+`""`. 
+Finally, we convert `factor` variables to dummy variables using the 
+`dummyVars` function in the `caret` package.
+To avoid perfect collinearity (a.k.a. the dummy variable trap), we set
+the `fullRank` parameter to `TRUE`.  `Survived.yes` is then converted back
+to a `factor` variable, and its levels are changed back to 'yes' and 'no' again
+(otherwise the `train` function in `caret` will complain later about
+invalid R variable names).
+
+We then make a 80%/20% train/test split 
+using the `Survived` factor
+variable in the `createDataPartition` function to preserve the
+overall class distribution of the data.
+
+```{r figure4.10, cache=TRUE, dependson="figure4.9"}
+titanicTidy <- subset(titanic, select = -c(PassengerId, Name, Ticket, Cabin))
+
+titanicTidy$Age[is.na(titanicTidy$Age)] <- -1
+
+titanicTidy <- titanicTidy %>%
+  mutate(sqrtFare = sqrt(Fare)) %>%
+  select(-Fare)
+
+titanicTidy <- titanicTidy %>%
+  filter(!(Embarked=="")) %>%
+  droplevels
+
+dummies <- dummyVars(" ~ .", data = titanicTidy, fullRank = TRUE)
+titanicTidyNumeric <- data.frame(predict(dummies, newdata = titanicTidy))
+
+titanicTidyNumeric$Survived.yes <- factor(titanicTidyNumeric$Survived.yes)
+titanicTidyNumeric$Survived.yes <- 
+  revalue(titanicTidyNumeric$Survived.yes, c("0"="no", "1"="yes"))
+
+trainIndex <- createDataPartition(titanicTidyNumeric$Survived.yes, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+
+titanicTrain <- titanicTidyNumeric[ trainIndex,]
+titanicTest  <- titanicTidyNumeric[-trainIndex,]
+
+kable(head(titanicTidyNumeric, 8), digits=2, caption = "Full dataset")
+kable(head(titanicTrain, 5), digits=2, 
+      caption = "Training set: used only for building the model")
+kable(head(titanicTest, 3), digits=2,
+      caption = "Testing set: used only for evaluating model")
+```
+
+## Figure 4.11 Comparing the testing set predictions with the actual values gives you the accuracy of the model.
+
+```{r figure4.11, eval=TRUE, cache=TRUE, dependson="figure4.10"}
+objControl <- trainControl(method='cv', number=3, 
+                           returnResamp='none', 
+                           summaryFunction = twoClassSummary, 
+                           classProbs = TRUE)
+titanic.gbm <- train(Survived.yes~.,data=titanicTrain, method='gbm',
+                     trControl=objControl,  
+                     metric = "ROC",
+                     preProc = c("center", "scale"))
+
+titanic.gbm.pred <- predict(titanic.gbm,newdata=titanicTest)
+
+figure4.11.df <- data.frame(head(titanicTest$Survived.yes),
+                            head(titanic.gbm.pred))
+kable(figure4.11.df,
+      col.names = c("Test set labels", "Predictions"))
+```
+
+## Figure 4.13 Organizing the class-wise accuracy into a confusion matrix
+```{r figure4.13, eval=TRUE, cache=TRUE, dependson="figure4.11"}
+titanic.gbm.cm <- confusionMatrix(titanic.gbm.pred,titanicTest$Survived.yes)
+titanic.gbm.cm
+```
+## Figure 4.15 A subset of probabilistic predictions from the Titanic test set. After sorting the full table by decreasing survival probability, you can set a threshold and consider all rows above this threshold as survived. Note that the indices are maintained so you know which original row the instance refers to.
+
+```{r figure4.15,eval=TRUE, cache=TRUE, dependson='figure4.11'}
+titanic.gbm.pred.prob <- predict(object=titanic.gbm, 
+                                 titanicTest, type='prob')
+kable(titanic.gbm.pred.prob[15:19,],col.names = c("Died","Survived"))
+titanic.ordered <- titanic.gbm.pred.prob[order(-titanic.gbm.pred.prob$yes),]
+kable(titanic.ordered[titanic.ordered$yes > 0.68 & titanic.ordered$yes < 0.73,])
+```
+
+## Listing 4.3 The ROC curve
+
+```{r listing4.3, eval=TRUE, cache=TRUE}
+# Returns the false-positive and true-positive rates at nPoints thresholds for 
+# the given true and predicted labels
+# trueLabels: 0=FALSE; 1=TRUE
+rocCurve <- function(trueLabels, predictedProbs, nPoints=100, posClass=1){
+  # Allocates the threshold and ROC lists
+  thr <- seq(0,1,length=nPoints)
+  tpr <- numeric(nPoints)
+  fpr <- numeric(nPoints)
+  
+  # Precalculates values for the positive and negative cases, used in the loop
+  pos <- trueLabels == posClass
+  neg <- !pos 
+  nPos <- sum(pos, na.rm=TRUE)
+  nNeg <- sum(neg, na.rm=TRUE)
+  
+  # For each threshold, calculates the rate of true and false positives
+  for (i in 1:length(thr)) {
+    t <- thr[i]
+    meetOrExceedThreshold <- predictedProbs >= t
+    tpr[i] <-  sum((meetOrExceedThreshold & pos), na.rm=TRUE) / nPos
+    fpr[i] <-  sum((meetOrExceedThreshold & neg), na.rm=TRUE) / nNeg
+  }
+  
+  # Create data frame without duplicated fpr's to return
+  duplicatedFPRs <- duplicated(fpr)
+  df <- data.frame(fpr=fpr[!duplicatedFPRs],tpr=tpr[!duplicatedFPRs],thr=thr[!duplicatedFPRs])
+  
+  return(df)
+}
+```
+
+## Figure 4.16 The ROC curve defined by calculating the confusion matrix and ROC metrics at 100 threshold points from 0 to 1. By convention, you plot the false-positive rate on the x-axis and the true-positive rate on the y-axis.
+
+```{r figure4.16, eval=TRUE, cache=TRUE, dependson=c("listing4.3, figure4.15")}
+df<-rocCurve(revalue(titanicTest$Survived.yes, c("no" = 0, "yes" = 1)),
+             titanic.gbm.pred.prob$yes)
+ggplot(df,aes(x=fpr,y=tpr)) +
+  geom_step(direction="vh") +
+  labs(x = "False-positive rate",
+       y = "True-positive rate")
+```
+
+## Listing 4.4 The area under the ROC curve
+
+```{r listing4.4, eval=TRUE, cache=TRUE}
+auc <- function(trueLabels, predictedProbs, nPoints=100, posClass=1){
+  auc <- 0
+  df <- rocCurve(trueLabels = trueLabels,
+                 predictedProbs = predictedProbs,
+                 nPoints = nPoints,
+                 posClass = posClass)
+  
+  for (i in 2:length(df$fpr)) {
+    auc <- auc + 0.5 * (df$fpr[i-1] - df$fpr[i]) * (df$tpr[i-1] + df$tpr[i])
+  }
+  
+  return(auc)
+}
+```
+## Bonus. Relative influence of variables in model.
+
+We can call the `summary` function on our model to get a data frame
+of variables (`var`) and their relative influence (`rel.inf`) in the model.
+Before plotting the data, we reorder by the `rel.inf` variable.
+
+```{r bonus.1, results="hide", eval=TRUE, cache=TRUE, dependson="figure4.11"}
+gbmSummary <- summary(titanic.gbm)
+```
+
+```{r bonus.2, eval=TRUE, cache=TRUE, dependson="bonus.1"}
+gbmSummary <- transform(gbmSummary,
+                        var = reorder(var,rel.inf))
+ggplot(data=gbmSummary, aes(var, rel.inf)) +
+  geom_bar(stat="identity") +
+  coord_flip() + 
+  labs(x="Relative Influence",
+       y="Variable")
+```
+
+## Figure 4.18 Handwritten digits in the MNIST dataset 
+
+Thanks to [Longhow Lam](https://longhowlam.wordpress.com/2015/11/25/a-little-h2o-deeplearning-experiment-on-the-mnist-data-set/)
+for posting the code used in the `displayMnistSamples` function that display's 
+digits from the MNIST dataset.
+
+```{r figure4.18, cache=TRUE,fig.height=5}
+mnist <- read.csv("../data/mnist_small.csv",
+                  colClasses = c(label = "factor"))
+displayMnistSamples <- function(x) {
+  for(i in x){
+  y = as.matrix(mnist[i, 2:785])
+  dim(y) = c(28, 28)
+  image( y[,nrow(y):1], axes = FALSE, col = gray(0:255 / 255))
+  text( 0.2, 0, mnist[i,1], cex = 3, col = 2, pos = c(3,4))
+  }
+}
+par( mfrow = c(4,5), mai = c(0,0,0.1,0.1))
+displayMnistSamples(sample(1:length(mnist),20))
+levels(mnist$label) <- make.names(levels(mnist$label))
+```
+
+## Figure 4.19 The confusion matrix for the 10-class MNIST handwritten digit classification problem
+
+```{r figure4.19, cache=TRUE, dependson="figure4.18", fig.height=4}
+trainIndex <- createDataPartition(mnist$label, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+
+mnistTrain <- mnist[ trainIndex,]
+mnistTest  <- mnist[-trainIndex,]
+
+cl = makeCluster(4)
+registerDoParallel(cl)
+
+str(mnistTrain$label)
+myTrainingControl <- trainControl(savePredictions = TRUE, 
+                              classProbs = TRUE, 
+                              verboseIter = FALSE)
+
+mnist.rf <- train(label~., data=mnistTrain, method='rf',
+                  ntree = 50,
+                  trControl = myTrainingControl,
+                  probability=TRUE, allowParallel=TRUE) 
+
+mnist.rf.pred = predict(mnist.rf,newdata=mnistTest)
+
+confusion.matrix <- confusionMatrix(mnist.rf.pred,mnistTest$label)
+
+confusionDF <- data.frame(confusion.matrix$table)
+
+confusionDF$Reference = with(confusionDF, 
+                             factor(Reference, levels = rev(levels(Reference))))
+
+jBuPuFun <- colorRampPalette(brewer.pal(n = 9, "BuPu"))
+paletteSize <- 256
+jBuPuPalette <- jBuPuFun(paletteSize)
+
+confusionPlot <- ggplot(
+  confusionDF, aes(x = Prediction, y = Reference, fill = Freq)) +
+  #theme(axis.text.x = element_text(angle = 0, hjust = 1, vjust = 0.5)) +
+  geom_tile() +
+  labs(x = "Predicted digit", y = "Actual digit") +
+  scale_fill_gradient2(
+    low = jBuPuPalette[1],
+    mid = jBuPuPalette[paletteSize/2],
+    high = jBuPuPalette[paletteSize],
+    midpoint = (max(confusionDF$Freq) + min(confusionDF$Freq)) / 2,
+    name = "") +
+  theme(legend.key.height = unit(2, "cm"))
+confusionPlot
+```
+
+## Figure 4.20 The ROC curves for each class of the MNIST 10-class classifier
+
+```{r figure4.20, cache=TRUE, dependson="figure4.19"}
+rocDF<-NULL
+aucDF<-NULL
+mnist.rf.pred.prob <- predict(object=mnist.rf,
+                              mnistTest, type='prob')
+for (i in 0:9){
+  digitLabel = paste0("X",i)
+  trueLabels <- as.numeric(mnistTest$label==digitLabel)
+  predictedProbs <- mnist.rf.pred.prob[[digitLabel]]
+  rocDF <- rbind(rocDF, 
+                 data.frame(rocCurve(trueLabels = trueLabels, predictedProbs = predictedProbs),digit=i))
+  aucDF <- rbind(aucDF, 
+                 data.frame(auc=auc(trueLabels = trueLabels, predictedProbs = predictedProbs),digit=i))
+}
+rocDF[,'digit'] <- as.factor(rocDF[,'digit'])
+labelVector <- c(paste0("Digit ",0:9,", AUC ",round(aucDF$auc,3)))  
+ggplot(rocDF[rocDF$fpr<0.2,],aes(x=fpr,y=tpr, linetype=digit, colour=digit)) +
+  geom_line() +
+  labs(x = "False-positive rate",
+       y = "True-positive rate") +
+  scale_linetype_discrete(name=NULL,
+                          labels=labelVector, 
+                          guide = guide_legend(keywidth = 3)) +
+  scale_colour_discrete(name=NULL,
+                        labels=labelVector,
+                        guide = guide_legend(keywidth = 3)) +
+  theme(legend.position=c(.8, .40)) 
+```
+
+
+
+## Figure 4.21 A subset of the Auto MPG dataset
+
+```{r figure4.21, cache=TRUE}
+auto <- read.csv("../data/auto-mpg.csv",
+                 colClasses = c(
+                      origin = "factor"))
+
+auto$origin <- revalue(auto$origin, 
+                       c("1\t"="USA", "2\t"="Europe", "3\t"="Asia"))
+
+kable(head(auto,5))
+```
+
+## Figure 4.22 Scatter plot of the predicted MPG versus actual values from the testing set. The diagonal line shows the optimal model.
+
+```{r figure4.22, cache=TRUE, dependson="figure4.21", fig.height=4}
+dummies <- dummyVars(" ~ .", data = auto, fullRank = TRUE)
+autoNumeric <- data.frame(predict(dummies, newdata = auto))
+
+trainIndex <- createDataPartition(autoNumeric$mpg, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+
+autoTrain <- autoNumeric[ trainIndex,]
+autoTest  <- autoNumeric[-trainIndex,]
+
+ctrl <- trainControl(method = "repeatedcv", number = 10, savePredictions = TRUE)
+
+auto.glm <- train(mpg ~.,  
+                 data=autoTrain, 
+                 method="glm", 
+                 trControl = ctrl, 
+                 tuneLength = 5)
+
+auto.glm.Pred <- predict(auto.glm, newdata=autoTest)
+
+ggplot(autoTest, aes(x=mpg, y=auto.glm.Pred)) + 
+  geom_point() + 
+  geom_abline(slope = 1, intercept = 0) +
+  labs(x="MPG", y="Predicted MPG")
+```
+
+## Listing 4.5 The root-mean-square error
+
+```{r listing4.5, cache=TRUE}
+rmse <- function(trueValues, predictedValues){
+  return(sqrt(sum((trueValues - predictedValues)**2)/length(trueValues)))
+}
+rmse(autoTest$mpg, auto.glm.Pred)
+```
+## Listing 4.6 The R-squared calculation
+
+```{r listing4.6, cache=TRUE}
+r2 <- function(trueValues, predictedValues) {
+  meanTrueValues <- mean(trueValues)
+  return( 1.0 - (sum((trueValues - predictedValues)**2) / sum((trueValues - meanTrueValues)**2) ))
+}
+r2(autoTest$mpg, auto.glm.Pred)
+```
+
+## Figure 4.24 The residual plot from predictions on the MPG dataset.
+
+```{r figure4.24, cache=TRUE, dependson="figure4.22", fig.height=4}
+autoTest$residuals <- autoTest$mpg - auto.glm.Pred
+
+ggplot(data=autoTest, aes(x=mpg, y=residuals)) +
+  geom_point() + 
+  geom_abline(slope = 0, intercept = 0) +
+  labs(x="MPG", y="Residuals")
+```
+
+## (Substitute for Figure 4.25) Tile plots for Support Vector Machine (SVM) tuning parameter grid search
+
+The `getModelInfo` function in the `caret` package can be used to find
+the available model parameters. By setting `summaryFunction = twoClassSummary`
+in `trainControl`, we request `ROC` to be used to select the optimal model using 
+the largest value.
+
+```{r figure4.25sub1, cache=TRUE, dependson="figure4.10"}
+svmRadialModelInfo <- getModelInfo("svmRadial")
+svmRadialModelInfo$svmRadial$parameters
+
+svmGrid <- expand.grid(sigma = c(0.0001,0.001,0.01,0.1),
+                       C = seq(0.1,2.1,by=0.5)) 
+                         
+fitControl <- trainControl(method = "repeatedcv", 
+                           number = 10, 
+                           savePredictions = TRUE,
+                           summaryFunction=twoClassSummary, 
+                           classProbs=TRUE)
+
+svmFit <- train(Survived.yes ~ ., data = titanicTrain,
+                method = "svmRadial", 
+                trControl = fitControl, 
+                verbose = FALSE, 
+                tuneGrid = svmGrid)
+
+svmFitDF <- data.frame(sigma = as.factor(svmFit$results$sigma), 
+                       C = as.factor(svmFit$results$C),
+                       ROC = svmFit$results$ROC)
+
+ggplot(svmFitDF, aes(x=sigma, y=C)) +
+  geom_tile(aes(fill=ROC))
+
+svmFit$bestTune
+```
+
+```{r figure4.25sub2, cache=TRUE, dependson="figure4.10"}
+svmGrid <- expand.grid(sigma = c(5:1 %o% 10^(-3:-1)),
+                       C = seq(0.1,2.1,by=0.25)) 
+                         
+fitControl <- trainControl(method = "repeatedcv", 
+                           number = 10, 
+                           savePredictions = TRUE,
+                           summaryFunction=twoClassSummary, 
+                           classProbs=TRUE)
+
+svmFit <- train(Survived.yes ~ ., data = titanicTrain,
+                method = "svmRadial", 
+                trControl = fitControl, 
+                verbose = FALSE, 
+                tuneGrid = svmGrid)
+
+svmFitDF <- data.frame(sigma = as.factor(svmFit$results$sigma), 
+                       C = as.factor(svmFit$results$C),
+                       ROC = svmFit$results$ROC)
+
+ggplot(svmFitDF, aes(x=sigma, y=C)) +
+  geom_tile(aes(fill=ROC))
+
+svmFit$bestTune
+
+svmFit$results[row.names(svmFit$bestTune),]
+```
