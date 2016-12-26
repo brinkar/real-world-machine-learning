@@ -72,3 +72,4 @@ figures/
 R/*.html
 R/*_cache
 R/*_files
+R/.Rhistory
